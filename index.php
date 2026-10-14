@@ -1,201 +1,232 @@
 <?php
+// ====== KONEKSI DATABASE (objek mysqli $conn dari koneksi.php) ======
+mysqli_report(MYSQLI_REPORT_OFF); // agar error ditangani lewat pesan di bawah, bukan exception
+require_once 'koneksi.php';
+$conn->set_charset('utf8mb4');
 
-include 'koneksi.php';
+$error_koneksi = '';
+$pesan = '';
+$galat = '';
 
-$pesan_sukses = "";
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    $nama_pelapor   = $conn->real_escape_string($_POST['nama_pelapor']);
-    $nama_fasilitas = $conn->real_escape_string($_POST['nama_fasilitas']);
-    $lokasi         = $conn->real_escape_string($_POST['lokasi']);
-    $id_kategori    = (int) $_POST['id_kategori'];
-    $deskripsi      = $conn->real_escape_string($_POST['deskripsi']);
-    $prioritas      = $conn->real_escape_string($_POST['prioritas']);
-    $status         = "Menunggu"; // Default sesuai ENUM di database
+// ====== CREATE (bonus): simpan laporan baru ======
+if (!$error_koneksi && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $nama_pelapor   = trim($_POST['nama_pelapor'] ?? '');
+    $nama_fasilitas = trim($_POST['nama_fasilitas'] ?? '');
+    $lokasi         = trim($_POST['lokasi'] ?? '');
+    $id_kategori    = (int)($_POST['id_kategori'] ?? 0);
+    $deskripsi      = trim($_POST['deskripsi'] ?? '');
+    $prioritas      = $_POST['prioritas'] ?? '';
 
-    // Kolom tanggal_laporan menggunakan DEFAULT CURRENT_TIMESTAMP di database[cite: 4], 
-    // namun bisa juga disisipkan secara manual jika diinginkan.
-    $sql_insert = "INSERT INTO laporan_kerusakan (nama_pelapor, nama_fasilitas, lokasi, id_kategori, deskripsi, prioritas, status) 
-                   VALUES ('$nama_pelapor', '$nama_fasilitas', '$lokasi', $id_kategori, '$deskripsi', '$prioritas', '$status')";
+    $prioritas_valid = ['Rendah', 'Sedang', 'Tinggi'];
 
-    if ($conn->query($sql_insert) === TRUE) {
-        $pesan_sukses = "Laporan berhasil dikirim!";
+    if ($nama_pelapor === '' || $nama_fasilitas === '' || $lokasi === '' || $id_kategori < 1 || $deskripsi === '' || !in_array($prioritas, $prioritas_valid, true)) {
+        $galat = 'Semua kolom wajib diisi dengan benar.';
     } else {
-        echo "Error: " . $sql_insert . "<br>" . $conn->error;
+        $stmt = $conn->prepare(
+            'INSERT INTO laporan_kerusakan (nama_pelapor, nama_fasilitas, lokasi, id_kategori, deskripsi, prioritas)
+             VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->bind_param('sssiss', $nama_pelapor, $nama_fasilitas, $lokasi, $id_kategori, $deskripsi, $prioritas);
+
+        if ($stmt->execute()) {
+            // Redirect agar refresh halaman tidak mengirim ulang form
+            header('Location: index.php?simpan=ok#daftar-laporan');
+            exit;
+        }
+        $galat = 'Laporan gagal disimpan: ' . $stmt->error;
+        $stmt->close();
     }
 }
 
+if (isset($_GET['simpan']) && $_GET['simpan'] === 'ok') {
+    $pesan = 'Laporan berhasil disimpan.';
+}
 
-$sql_select = "SELECT laporan_kerusakan.*, kategori_fasilitas.nama_kategori 
-               FROM laporan_kerusakan 
-               JOIN kategori_fasilitas ON laporan_kerusakan.id_kategori = kategori_fasilitas.id_kategori 
-               ORDER BY laporan_kerusakan.id_laporan DESC";
+// ====== READ: ambil data laporan ======
+$laporan = [];
+$galat_query = '';
+if (!$error_koneksi) {
+    $hasil = $conn->query(
+        'SELECT id_laporan, nama_pelapor, nama_fasilitas, lokasi, prioritas, status, tanggal_laporan
+         FROM laporan_kerusakan
+         ORDER BY tanggal_laporan DESC, id_laporan DESC'
+    );
+    if ($hasil) {
+        while ($baris = $hasil->fetch_assoc()) {
+            $laporan[] = $baris;
+        }
+    } else {
+        $galat_query = 'Query gagal: ' . $conn->error;
+    }
 
-$result = $conn->query($sql_select);
+    $kategori = [];
+    $hasil_kategori = $conn->query('SELECT id_kategori, nama_kategori FROM kategori_fasilitas ORDER BY id_kategori');
+    if ($hasil_kategori) {
+        while ($k = $hasil_kategori->fetch_assoc()) {
+            $kategori[(int)$k['id_kategori']] = $k['nama_kategori'];
+        }
+    }
+}
 
-
-if (!$result) {
-    die("Query Error: " . $conn->error);
+function e($teks) {
+    return htmlspecialchars((string)$teks, ENT_QUOTES, 'UTF-8');
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pelaporan Kerusakan Fasilitas Sekolah</title>
-
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com/"></script>
 </head>
-<body class="bg-light">
+<body class="bg-gray-50 text-gray-800 antialiased">
 
-
-    <header class="bg-primary text-white py-4 mb-4 shadow-sm">
-        <div class="container">
-            <h1 class="h3">Sistem Pelaporan Kerusakan Fasilitas Sekolah</h1>
-            <p class="lead fs-6 mb-2">Catat dan pantau laporan kerusakan fasilitas sekolah.</p>
-            <nav aria-label="Navigasi utama" >
-                <a href="#form-laporan" class="btn btn-light btn-sm text-primary fw-semibold">Buat Laporan</a>
-                <a href="#daftar-laporan" class="btn btn-outline-light btn-sm">Daftar Laporan</a>
+    <header class="border-b border-gray-200 bg-white">
+        <div class="mx-auto max-w-5xl px-4 py-6">
+            <h1 class="text-xl font-semibold">Sistem Pelaporan Kerusakan Fasilitas Sekolah</h1>
+            <p class="mt-1 text-sm text-gray-500">Catat dan pantau laporan kerusakan fasilitas sekolah.</p>
+            <nav aria-label="Navigasi utama" class="mt-4 flex gap-4 text-sm">
+                <a href="#form-laporan" class="underline-offset-4 hover:underline">Buat Laporan</a>
+                <a href="#daftar-laporan" class="underline-offset-4 hover:underline">Daftar Laporan</a>
             </nav>
         </div>
     </header>
 
-    <main class="container mb-5">
-        
-        <?php if (!empty($pesan_sukses)): ?>
-            <div class="alert alert-success" role="alert">
-                <?= $pesan_sukses; ?>
-            </div>
+    <main class="mx-auto max-w-5xl space-y-10 px-4 py-8">
+
+        <?php if ($error_koneksi): ?>
+            <div class="rounded border border-gray-300 bg-white px-4 py-3 text-sm"><?= e($error_koneksi) ?></div>
         <?php endif; ?>
 
-        <section id="form-laporan" class="card shadow-sm mb-5">
-            <div class="card-body p-4">
-                <h2 class="h4 mb-3">Form Pelaporan Kerusakan</h2>
-                <p class="text-muted small">Lengkapi data berikut untuk melaporkan fasilitas yang rusak.</p>
+        <section id="form-laporan" aria-labelledby="judul-form">
+            <h2 id="judul-form" class="text-lg font-semibold">Form Pelaporan Kerusakan</h2>
+            <p class="mt-1 text-sm text-gray-500">Lengkapi data berikut untuk melaporkan fasilitas yang rusak.</p>
 
-                <form action="" method="post">
-                    <fieldset>
-                        <legend class="fs-6 fw-bold text-secondary mb-3">Data Pelaporan</legend>
+            <?php if ($pesan): ?>
+                <p class="mt-4 rounded border border-gray-300 bg-white px-4 py-2 text-sm"><?= e($pesan) ?></p>
+            <?php endif; ?>
+            <?php if ($galat): ?>
+                <p class="mt-4 rounded border border-gray-800 bg-white px-4 py-2 text-sm"><?= e($galat) ?></p>
+            <?php endif; ?>
 
-                        <div class="mb-3">
-                            <label for="nama_pelapor" class="form-label">Nama pelapor</label>
-                            <input type="text" id="nama_pelapor" name="nama_pelapor" maxlength="100" class="form-control" required>
-                        </div>
+            <form action="index.php#form-laporan" method="post" class="mt-4 rounded border border-gray-200 bg-white p-5">
+                <div class="grid gap-4 sm:grid-cols-2">
+                    <div>
+                        <label for="nama_pelapor" class="mb-1 block text-sm font-medium">Nama pelapor</label>
+                        <input type="text" id="nama_pelapor" name="nama_pelapor" maxlength="100" required
+                               value="<?= e($_POST['nama_pelapor'] ?? '') ?>"
+                               class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-gray-800 focus:outline-none">
+                    </div>
 
-                        <div class="mb-3">
-                            <label for="nama_fasilitas" class="form-label">Nama fasilitas</label>
-                            <input type="text" id="nama_fasilitas" name="nama_fasilitas" maxlength="100" class="form-control" required>
-                        </div>
+                    <div>
+                        <label for="nama_fasilitas" class="mb-1 block text-sm font-medium">Nama fasilitas</label>
+                        <input type="text" id="nama_fasilitas" name="nama_fasilitas" maxlength="100" required
+                               value="<?= e($_POST['nama_fasilitas'] ?? '') ?>"
+                               class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-gray-800 focus:outline-none">
+                    </div>
 
-                        <div class="mb-3">
-                            <label for="lokasi" class="form-label">Lokasi kerusakan</label>
-                            <input type="text" id="lokasi" name="lokasi" maxlength="100" class="form-control" required>
-                        </div>
+                    <div>
+                        <label for="lokasi" class="mb-1 block text-sm font-medium">Lokasi kerusakan</label>
+                        <input type="text" id="lokasi" name="lokasi" maxlength="100" required
+                               value="<?= e($_POST['lokasi'] ?? '') ?>"
+                               class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-gray-800 focus:outline-none">
+                    </div>
 
-                        <div class="mb-3">
-                            <label for="id_kategori" class="form-label">Kategori fasilitas</label>
-                            <select id="id_kategori" name="id_kategori" class="form-select" required>
-                                <option value="">-- Pilih kategori --</option>
-                                <option value="1">Elektronik</option>
-                                <option value="2">Furnitur</option>
-                                <option value="3">Jaringan</option>
-                                <option value="4">Peralatan Kelas</option>
-                            </select>
-                        </div>
+                    <div>
+                        <label for="id_kategori" class="mb-1 block text-sm font-medium">Kategori fasilitas</label>
+                        <select id="id_kategori" name="id_kategori" required
+                                class="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-gray-800 focus:outline-none">
+                            <option value="">-- Pilih kategori --</option>
+                            <?php
+                            foreach ($kategori as $id => $nama):
+                                $dipilih = ((int)($_POST['id_kategori'] ?? 0) === $id) ? 'selected' : '';
+                            ?>
+                                <option value="<?= $id ?>" <?= $dipilih ?>><?= e($nama) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
 
-                        <div class="mb-3">
-                            <label for="deskripsi" class="form-label">Deskripsi kerusakan</label>
-                            <textarea id="deskripsi" name="deskripsi" rows="4" class="form-control" required></textarea>
-                        </div>
+                    <div class="sm:col-span-2">
+                        <label for="deskripsi" class="mb-1 block text-sm font-medium">Deskripsi kerusakan</label>
+                        <textarea id="deskripsi" name="deskripsi" rows="4" required
+                                  class="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-gray-800 focus:outline-none"><?= e($_POST['deskripsi'] ?? '') ?></textarea>
+                    </div>
 
-                        <div class="mb-3">
-                            <label for="prioritas" class="form-label">Prioritas</label>
-                            <select id="prioritas" name="prioritas" class="form-select" required>
-                                <option value="">-- Pilih prioritas --</option>
-                                <option value="Rendah">Rendah</option>
-                                <option value="Sedang">Sedang</option>
-                                <option value="Tinggi">Tinggi</option>
-                            </select>
-                        </div>
+                    <div>
+                        <label for="prioritas" class="mb-1 block text-sm font-medium">Prioritas</label>
+                        <select id="prioritas" name="prioritas" required
+                                class="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-gray-800 focus:outline-none">
+                            <option value="">-- Pilih prioritas --</option>
+                            <?php foreach (['Rendah', 'Sedang', 'Tinggi'] as $p):
+                                $dipilih = (($_POST['prioritas'] ?? '') === $p) ? 'selected' : '';
+                            ?>
+                                <option value="<?= $p ?>" <?= $dipilih ?>><?= $p ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
 
-                        <button type="submit" class="btn btn-primary">Kirim Laporan</button>
-                    </fieldset>
-                </form>
-            </div>
+                <div class="mt-5">
+                    <button type="submit"
+                            class="rounded bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700">
+                        Kirim Laporan
+                    </button>
+                </div>
+            </form>
         </section>
 
-        <section id="daftar-laporan" class="card shadow-sm">
-            <div class="card-body p-4">
-                <h2 class="h4 mb-3">Daftar Laporan Kerusakan</h2>
-                <p class="text-muted small">Seluruh laporan yang tercatat pada database ditampilkan di bagian ini.</p>
+        <section id="daftar-laporan" aria-labelledby="judul-daftar">
+            <h2 id="judul-daftar" class="text-lg font-semibold">Daftar Laporan Kerusakan</h2>
+            <p class="mt-1 text-sm text-gray-500">Seluruh laporan yang tercatat pada database ditampilkan di bagian ini.</p>
 
-                <div class="table-responsive">
-                    <table class="table table-striped table-bordered align-middle">
-                        <thead class="table-dark">
+            <?php if ($galat_query): ?>
+                <p class="mt-4 text-sm"><?= e($galat_query) ?></p>
+            <?php endif; ?>
+
+            <div class="mt-4 overflow-x-auto rounded border border-gray-200 bg-white">
+                <table class="min-w-full text-left text-sm">
+                    <thead class="border-b border-gray-200 bg-gray-100 text-gray-600">
+                        <tr>
+                            <th scope="col" class="px-4 py-3 font-medium">No.</th>
+                            <th scope="col" class="px-4 py-3 font-medium">Fasilitas</th>
+                            <th scope="col" class="px-4 py-3 font-medium">Lokasi</th>
+                            <th scope="col" class="px-4 py-3 font-medium">Pelapor</th>
+                            <th scope="col" class="px-4 py-3 font-medium">Prioritas</th>
+                            <th scope="col" class="px-4 py-3 font-medium">Status</th>
+                            <th scope="col" class="px-4 py-3 font-medium">Tanggal</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100">
+                        <?php if (empty($laporan)): ?>
                             <tr>
-                                <th scope="col">No.</th>
-                                <th scope="col">Fasilitas</th>
-                                <th scope="col">Kategori</th>
-                                <th scope="col">Lokasi</th>
-                                <th scope="col">Pelapor</th>
-                                <th scope="col">Prioritas</th>
-                                <th scope="col">Status</th>
-                                <th scope="col">Tanggal</th>
+                                <td colspan="7" class="px-4 py-6 text-center text-gray-500">Belum ada laporan.</td>
                             </tr>
-                        </thead>
-                        <tbody>
-                            <?php if ($result->num_rows > 0): ?>
-                                <?php $no = 1; while($row = $result->fetch_assoc()): ?>
-                                    <tr>
-                                        <td><?= $no++; ?></td>
-                                        <td>
-                                            <strong><?= htmlspecialchars($row['nama_fasilitas']); ?></strong><br>
-                                            <small class="text-muted"><?= htmlspecialchars($row['deskripsi']); ?></small>
-                                        </td>
-                                        <td><span class="badge bg-info text-dark"><?= htmlspecialchars($row['nama_kategori']); ?></span></td>
-                                        <td><?= htmlspecialchars($row['lokasi']); ?></td>
-                                        <td><?= htmlspecialchars($row['nama_pelapor']); ?></td>
-                                        <td>
-                                            <?php 
-                                                $badgeClass = match($row['prioritas']) {
-                                                    'Tinggi' => 'bg-danger',
-                                                    'Sedang' => 'bg-warning text-dark',
-                                                    default => 'bg-success'
-                                                };
-                                            ?>
-                                            <span class="badge <?= $badgeClass; ?>"><?= htmlspecialchars($row['prioritas']); ?></span>
-                                        </td>
-                                        <td>
-                                            <span class="badge bg-secondary"><?= htmlspecialchars($row['status']); ?></span>
-                                        </td>
-                                        <td><small><?= htmlspecialchars($row['tanggal_laporan']); ?></small></td>
-                                    </tr>
-                                <?php endwhile; ?>
-                            <?php else: ?>
-                                <tr>
-                                    <td colspan="8" class="text-center text-muted py-4">Belum ada data ditampilkan.</td>
+                        <?php else: ?>
+                            <?php foreach ($laporan as $i => $row):
+                                $tanggal = date('d/m/Y H:i', strtotime($row['tanggal_laporan']));
+                                $prioritas_baris = $row['prioritas'] ?? '';
+                                $kelas_prioritas = $prioritas_baris === 'Tinggi' ? 'font-semibold text-gray-900' : 'text-gray-600';
+                            ?>
+                                <tr class="hover:bg-gray-50">
+                                    <td class="px-4 py-3"><?= $i + 1 ?></td>
+                                    <td class="px-4 py-3"><?= e($row['nama_fasilitas'] ?? '') ?></td>
+                                    <td class="px-4 py-3"><?= e($row['lokasi'] ?? '') ?></td>
+                                    <td class="px-4 py-3"><?= e($row['nama_pelapor'] ?? '') ?></td>
+                                    <td class="px-4 py-3 <?= $kelas_prioritas ?>"><?= e($prioritas_baris) ?></td>
+                                    <td class="px-4 py-3"><?= e($row['status'] ?? '') ?></td>
+                                    <td class="px-4 py-3 whitespace-nowrap text-gray-600"><?= e($tanggal) ?></td>
                                 </tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
             </div>
         </section>
     </main>
 
-    <footer class="bg-white text-center py-4 border-top text-muted small">
-        <div class="container">
-            <p class="mb-0">&copy; 2024 Sistem Pelaporan Kerusakan Fasilitas Sekolah.</p>
-        </div>
+    <footer class="border-t border-gray-200 bg-white">
+        <p class="mx-auto max-w-5xl px-4 py-4 text-xs text-gray-500">&copy; 2024 Sistem Pelaporan Kerusakan Fasilitas Sekolah.</p>
     </footer>
-
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
-
-<?php
-
-$conn->close();
-?>
